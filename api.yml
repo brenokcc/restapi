@@ -1,0 +1,14 @@
+auth.user:
+  prefix: users
+  search: username, groups__name
+  filter: username
+  ordering: username
+  list: username, email
+  fieldsets:
+    dados_gerais: username, first_name, last_name
+    dados_acesso: date_joined, is_staff, is_active
+    contato: email
+auth.permission:
+  prefix: permissions
+  search: codename
+  ordering: id, codename
