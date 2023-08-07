@@ -15,7 +15,7 @@ models:
     view:
       fields: username, is_staff, is_active
       actions:
-        substrair: RealizarSubtracao
+        subtrair: RealizarSubtracao
   auth.permission:
     prefix: permissions
     search: codename

@@ -120,7 +120,13 @@ class ActionMetaclass(serializers.SerializerMetaclass):
 
 
 class Action(serializers.Serializer, metaclass=ActionMetaclass):
-    pass
+
+    def __init__(self, *args, **kwargs):
+        self.source = None
+        super().__init__(*args, **kwargs)
+
+    def has_permission(self):
+        return False
 
 
 
@@ -272,41 +278,55 @@ def model_view_set_factory(model_name, filters=(), search=(), ordering=(), field
     for d in (_view_actions, _list_actions):
         for k in d:
             actions[k] = d[k]
+
     for k in actions:
-        v = actions[k]
-        def x(self, request):
-            serializer = ACTIONS[v](data=request.data)
-            choices = request.query_params.get('choices_field')
-            if choices:
-                term = request.query_params.get('choices_search')
-                qs = serializer.fields[choices].queryset.all()
-                return Response(as_choices(generic_search(qs, term)))
-            return Response(serializer.submit(), status=status.HTTP_200_OK)
-        x.__name__ = k
-        url_path = 'k' if 0 else '{}/<int:id>'.format(k)
-        swagger_auto_schema(manual_parameters=[choices_field, choices_search, id_parameter])(x)
-        action(detail=False, methods=["post"], url_path=url_path)(x)
-        setattr(ViewSet, k, x)
+        function = create_action_func(apps.get_model(model_name), k, actions[k])
+        manual_parameters = [choices_field, choices_search]
+        if k in _view_actions:
+            manual_parameters.append(id_parameter)
+        swagger_auto_schema(manual_parameters=manual_parameters)(function)
+        action(detail=k in _view_actions, methods=["post"], url_path=k, url_name=k, name=k)(function)
+        setattr(ViewSet, k, function)
     return ViewSet
 
 
+def create_action_func(model, func_name, serializer_name):
+    def func(self, request, *args, **kwargs):
+        serializer = ACTIONS[serializer_name](data=request.data)
+        serializer.source = model.objects.get(pk=kwargs['pk']) if 'pk' in kwargs else model.objects
+        choices = request.query_params.get('choices_field')
+        if choices:
+            term = request.query_params.get('choices_search')
+            qs = serializer.fields[choices].queryset.all()
+            return Response(as_choices(generic_search(qs, term)))
+        if request.method.lower() == 'get':
+            return Response(serializer.initial_data, status=status.HTTP_200_OK)
+        if serializer.is_valid():
+            return Response(serializer.submit(), status=status.HTTP_200_OK)
+        else:
+            return Response(dict(errors=serializer.errors), status=status.HTTP_200_OK)
+
+    func.__name__ = func_name
+    return func
+
+
 class RealizarSoma(Action):
-    u = serializers.PrimaryKeyRelatedField(queryset=apps.get_model('auth.user').objects, label='User')
+    u = serializers.PrimaryKeyRelatedField(queryset=apps.get_model('auth.user').objects, label='User', initial=1)
     a = serializers.IntegerField()
     b = serializers.IntegerField()
 
     def submit(self):
-        if self.is_valid(raise_exception=True):
-            return dict(soma=self.data['a'] + self.data['b'])
+        print(self.source)
+        return dict(soma=self.data['a'] + self.data['b'])
 
 class RealizarSubtracao(Action):
-    u = serializers.PrimaryKeyRelatedField(queryset=apps.get_model('auth.user').objects, label='User')
+    u = serializers.PrimaryKeyRelatedField(queryset=apps.get_model('auth.user').objects, label='User', initial=1)
     a = serializers.IntegerField()
     b = serializers.IntegerField()
 
     def submit(self):
-        if self.is_valid(raise_exception=True):
-            return dict(subtracao=self.data['a'] - self.data['b'])
+        print(self.source)
+        return dict(subtracao=self.data['a'] - self.data['b'])
 
 
 specification = yaml.safe_load(open('api.yml'))
