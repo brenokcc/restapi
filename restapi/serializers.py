@@ -1,3 +1,4 @@
+import re
 import yaml
 import operator
 from functools import reduce
@@ -13,6 +14,7 @@ from rest_framework.compat import coreapi, coreschema
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 
+ACTIONS = {}
 
 router = routers.DefaultRouter()
 
@@ -20,6 +22,7 @@ router = routers.DefaultRouter()
 only_fields = openapi.Parameter('fields', openapi.IN_QUERY, description="Name of the fields to be retrieved", type=openapi.TYPE_STRING)
 choices_field = openapi.Parameter('choices_field', openapi.IN_QUERY, description="Name of the field from which the choices will be displayed.", type=openapi.TYPE_STRING)
 choices_search = openapi.Parameter('choices_search', openapi.IN_QUERY, description="Term to be used in the choices search.", type=openapi.TYPE_STRING)
+id_parameter = openapi.Parameter('id', openapi.IN_PATH, description="The id of the object.", type=openapi.TYPE_INTEGER)
 
 class DynamicFieldsModelSerializer(serializers.ModelSerializer):
 
@@ -34,7 +37,7 @@ class DynamicFieldsModelSerializer(serializers.ModelSerializer):
             for name in v:
                 self.fields.pop(name, None)
 
-    def remove_fields(self):
+    def remove_unrequested_fields(self):
         fields = self.context['request'].query_params.get('fields')
         if fields:
             fields = fields.split(',')
@@ -53,19 +56,10 @@ class FieldsetField(serializers.DictField):
         super().__init__(*args, **kwargs)
 
     def to_representation(self, value):
-        return {attr: getattr(value, attr) for attr in self.attrs}
+        return {attr: getattr(value, attr)() if callable(getattr(value, attr)) else getattr(value, attr) for attr in self.attrs}
 
     def to_internal_value(self, data):
         return {attr: data[attr] for attr in self.attrs}
-
-
-class Somar(serializers.Serializer):
-    a = serializers.IntegerField()
-    b = serializers.IntegerField()
-
-    def submit(self):
-        if self.is_valid(raise_exception=True):
-            return dict(soma=self.data['a'] + self.data['b'])
 
 
 def generic_search(qs, term):
@@ -74,11 +68,14 @@ def generic_search(qs, term):
     conditions = []
     for search_term in search_terms:
         queries = [
-            models.Q(**{orm_lookup: search_term})
+            models.Q(**{f'{orm_lookup}__icontains': search_term})
             for orm_lookup in orm_lookups
         ]
         conditions.append(reduce(operator.or_, queries))
     return qs.filter(reduce(operator.and_, conditions)) if conditions else qs
+
+def as_choices(qs, limit=20):
+    return [{'id': obj.pk, 'text': str(obj)} for obj in qs[0:limit]]
 
 
 class ChoiceFilter(filters.BaseFilterBackend):
@@ -115,6 +112,18 @@ class ChoiceFilter(filters.BaseFilterBackend):
         ]
 
 
+class ActionMetaclass(serializers.SerializerMetaclass):
+    def __new__(mcs, name, bases, attrs):
+        cls = super().__new__(mcs, name, bases, attrs)
+        ACTIONS[name] = cls
+        return cls
+
+
+class Action(serializers.Serializer, metaclass=ActionMetaclass):
+    pass
+
+
+
 class ModelViewSet(viewsets.ModelViewSet):
     # filter_backends = [ChoiceFilter]
 
@@ -135,23 +144,26 @@ class ModelViewSet(viewsets.ModelViewSet):
             return self.get_update_serializer_class()
         if self.action == 'partial_update':
             return self.get_partial_update_serializer_class()
-        elif self.action == 'somar':
-            return Somar
+        elif self.action in self.action_serializers:
+            return ACTIONS[self.action_serializers[self.action]]
         return self.get_create_serializer_class()
 
     def get_list_serializer_class(self):
-        fieldsets = self.view_fieldsets
+        if self.list_display:
+            list_display = [name for name in self.list_display if name not in self.object_fieldsets]
+            fieldsets = {k:v for k, v in self.object_fieldsets.items() if k in self.list_display}
+        else:
+            list_display = '__all__'
+            fieldsets = self.object_fieldsets
         class Serializer(DynamicFieldsModelSerializer):
             class Meta:
                 model = self.model
-                if self.list_fields:
-                    fields = self.list_fields
-                else:
-                    exclude = ()
+                fields = list_display
 
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
-                self.remove_fields()
+                self.configure_fieldsets(fieldsets)
+                self.remove_unrequested_fields()
 
         return Serializer
 
@@ -165,7 +177,17 @@ class ModelViewSet(viewsets.ModelViewSet):
         return Serializer
 
     def get_retrieve_serializer_class(self):
-        fieldsets = self.view_fieldsets
+        fields = []
+        fieldsets = {}
+        if self.view_display:
+            for k in self.view_display:
+                if k in self.object_fieldsets:
+                    fieldsets[k] = self.object_fieldsets[k]
+                    fields.extend(self.object_fieldsets[k])
+                else:
+                    fields.append(k)
+        else:
+            fieldsets.update(self.object_fieldsets)
         class Serializer(DynamicFieldsModelSerializer):
             class Meta:
                 model = self.model
@@ -174,7 +196,11 @@ class ModelViewSet(viewsets.ModelViewSet):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 self.configure_fieldsets(fieldsets)
-                self.remove_fields()
+                self.remove_unrequested_fields()
+                if fields:
+                    for k in list(self.fields.keys()):
+                        if k not in fields:
+                            self.fields.pop(k)
 
         return Serializer
 
@@ -189,7 +215,7 @@ class ModelViewSet(viewsets.ModelViewSet):
             term = request.query_params.get('choices_search')
             qs = getattr(self.model, choices).field.related_model.objects.all()
             qs = qs.filter(id__in=self.filter_queryset(self.get_queryset()).values_list(choices, flat=True))
-            return Response([{'id': obj.pk, 'text': str(obj)} for obj in generic_search(qs, term)[0:20]])
+            return Response(as_choices(generic_search(qs, term)))
         return super().list(request, *args, **kwargs)
 
     @swagger_auto_schema(manual_parameters=[choices_field, choices_search])
@@ -198,7 +224,7 @@ class ModelViewSet(viewsets.ModelViewSet):
         if choices:
             term = request.query_params.get('choices_search')
             qs = getattr(self.model, 'content_type').field.related_model.objects.all()
-            return Response([{'id': obj.pk, 'text': str(obj)} for obj in generic_search(qs, term)[0:20]])
+            return Response(as_choices(generic_search(qs, term)))
         return super().create(request, *args, **kwargs)
 
     def get_update_serializer_class(self):
@@ -221,33 +247,88 @@ class ModelViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=["post"], url_path=r'somar')
-    def somar(self, request):
-        return Response(Somar(data=request.data).submit(), status=status.HTTP_200_OK)
+def str_to_list(s):
+    return [name.strip() for name in s.split(',')] if s else []
 
+def iter_to_list(i):
+    return [o for o in i]
 
-
-def model_view_set_factory(model_name, filters=(), search=(), fieldsets=(), ordering=(), l2=()):
+def model_view_set_factory(model_name, filters=(), search=(), ordering=(), fieldsets=(), _view_display=(), _list_display=(), _view_actions=(), _list_actions=()):
     class ViewSet(ModelViewSet):
-        view_fieldsets = fieldsets
+        object_fieldsets = fieldsets
         model = apps.get_model(model_name)
-        filterset_fields = filters
+        filterset_fields = str_to_list(filters)
         if search:
             search_fields = [name.strip() for name in search.split(',')]
         if ordering:
             ordering_fields = [name.strip() for name in ordering.split(',')]
-        list_fields = [name.strip() for name in l2.split(',')] if l2 else ()
+        view_display = str_to_list(_view_display)
+        list_display = str_to_list(_list_display)
+        view_actions = iter_to_list(_view_actions)
+        list_actions = iter_to_list(_list_actions)
+        action_serializers = {k:_view_actions[k] for k in _view_actions} | {k:_list_actions[k] for k in _list_actions}
+
+    actions = {}
+    for d in (_view_actions, _list_actions):
+        for k in d:
+            actions[k] = d[k]
+    for k in actions:
+        v = actions[k]
+        def x(self, request):
+            serializer = ACTIONS[v](data=request.data)
+            choices = request.query_params.get('choices_field')
+            if choices:
+                term = request.query_params.get('choices_search')
+                qs = serializer.fields[choices].queryset.all()
+                return Response(as_choices(generic_search(qs, term)))
+            return Response(serializer.submit(), status=status.HTTP_200_OK)
+        x.__name__ = k
+        url_path = 'k' if 0 else '{}/<int:id>'.format(k)
+        swagger_auto_schema(manual_parameters=[choices_field, choices_search, id_parameter])(x)
+        action(detail=False, methods=["post"], url_path=url_path)(x)
+        setattr(ViewSet, k, x)
     return ViewSet
 
 
-for k, v in yaml.safe_load(open('api.yml')).items():
+class RealizarSoma(Action):
+    u = serializers.PrimaryKeyRelatedField(queryset=apps.get_model('auth.user').objects, label='User')
+    a = serializers.IntegerField()
+    b = serializers.IntegerField()
+
+    def submit(self):
+        if self.is_valid(raise_exception=True):
+            return dict(soma=self.data['a'] + self.data['b'])
+
+class RealizarSubtracao(Action):
+    u = serializers.PrimaryKeyRelatedField(queryset=apps.get_model('auth.user').objects, label='User')
+    a = serializers.IntegerField()
+    b = serializers.IntegerField()
+
+    def submit(self):
+        if self.is_valid(raise_exception=True):
+            return dict(subtracao=self.data['a'] - self.data['b'])
+
+
+specification = yaml.safe_load(open('api.yml'))
+for k, v in specification.get('models').items():
     name = k.split('.')[-1]
-    router.register(v.get('prefix'), model_view_set_factory(
-        k,
-        filters=v.get('filters', ()),
-        search=v.get('search', ()),
-        fieldsets=v.get('fieldsets', ()),
-        ordering=v.get('ordering', ()),
-        l2=v.get('list', ()),
-    ), name)
+    list_display = v.get('list', {}).get('fields', ())
+    view_display = v.get('view', {}).get('fields', ())
+    list_actions = v.get('list', {}).get('actions', ())
+    view_actions = v.get('view', {}).get('actions', ())
+    router.register(
+        v.get('prefix'),
+        model_view_set_factory(
+            k,
+            filters=v.get('filters', ()),
+            search=v.get('search', ()),
+            ordering=v.get('ordering', ()),
+            fieldsets=v.get('fieldsets', ()),
+            _view_display=view_display,
+            _list_display=list_display,
+            _view_actions=view_actions,
+            _list_actions=list_actions,
+        ),
+        name
+    )
 

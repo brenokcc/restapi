@@ -1,14 +1,22 @@
-auth.user:
-  prefix: users
-  search: username, groups__name
-  filter: username
-  ordering: username
-  list: username, email
-  fieldsets:
-    dados_gerais: username, first_name, last_name
-    dados_acesso: date_joined, is_staff, is_active
-    contato: email
-auth.permission:
-  prefix: permissions
-  search: codename
-  ordering: id, codename
+models:
+  auth.user:
+    prefix: users
+    search: username, groups__name
+    filters: groups
+    ordering: username
+    fieldsets:
+      dados_gerais: username, first_name, last_name, get_full_name
+      dados_acesso: date_joined, is_staff, is_active
+      contato: email
+    list:
+      fields: username, dados_acesso
+      actions:
+        somar: RealizarSoma
+    view:
+      fields: username, is_staff, is_active
+      actions:
+        substrair: RealizarSubtracao
+  auth.permission:
+    prefix: permissions
+    search: codename
+    ordering: id, codename
