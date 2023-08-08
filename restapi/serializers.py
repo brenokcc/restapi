@@ -10,41 +10,130 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import filters
 from django.db import models
+from django.contrib.auth.models import User
 from rest_framework.compat import coreapi, coreschema
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from rest_framework.pagination import LimitOffsetPagination, PageNumberPagination
+from rest_framework.relations import ManyRelatedField, MANY_RELATION_KWARGS
+from django_filters.rest_framework import DjangoFilterBackend
+from pathlib import Path
+from django.utils.autoreload import autoreload_started
 
 ACTIONS = {}
 
 router = routers.DefaultRouter()
 
 
-only_fields = openapi.Parameter('fields', openapi.IN_QUERY, description="Name of the fields to be retrieved", type=openapi.TYPE_STRING)
+only_fields = openapi.Parameter('only', openapi.IN_QUERY, description="Name of the fields to be retrieved.", type=openapi.TYPE_STRING)
+limit_field = openapi.Parameter('limit', openapi.IN_QUERY, description="Number of results to return per page.", type=openapi.TYPE_STRING)
+offset_field = openapi.Parameter('offset', openapi.IN_QUERY, description="The initial index from which to return the results.", type=openapi.TYPE_STRING)
 choices_field = openapi.Parameter('choices_field', openapi.IN_QUERY, description="Name of the field from which the choices will be displayed.", type=openapi.TYPE_STRING)
 choices_search = openapi.Parameter('choices_search', openapi.IN_QUERY, description="Term to be used in the choices search.", type=openapi.TYPE_STRING)
 id_parameter = openapi.Parameter('id', openapi.IN_PATH, description="The id of the object.", type=openapi.TYPE_INTEGER)
 
+
+class MethodField(serializers.Field):
+
+    def __init__(self, *args, method_name=None, **kwargs):
+        self.method_name = method_name
+        super().__init__(*args, **kwargs)
+
+    def to_representation(self, instance):
+        paginator = LimitOffsetPagination()
+        value = getattr(instance, self.method_name)()
+        if isinstance(value, models.Manager) or isinstance(value, models.QuerySet):
+            if isinstance(value, models.Manager):
+                value = value.all()
+            queryset = paginator.paginate_queryset(value, self.context['request'], self.context['view'])
+            data = [{'id': value.pk, 'text': str(value)} for value in queryset]
+            return paginator.get_paginated_response(data).data
+        elif isinstance(value, dict) or isinstance(value, list):
+            return value
+        elif isinstance(value, models.Model):
+            return {'id': value.id, 'text':str(value)}
+        else:
+            return dict(value=value)
+
+
+class PaginableManyRelatedField(ManyRelatedField):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.paginator = LimitOffsetPagination()
+
+    def get_attribute(self, instance):
+        return self.paginator.paginate_queryset(super().get_attribute(instance), self.context['request'], self.context['view'])
+
+    def to_representation(self, value):
+        data = super().to_representation(value)
+        return self.paginator.get_paginated_response(data).data
+
+class RelationSerializer(serializers.RelatedField):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def to_representation(self, value):
+        return  {'id': value.pk, 'text': str(value)}
+
+    @classmethod
+    def many_init(cls, *args, **kwargs):
+        list_kwargs = {'child_relation': cls(*args, **kwargs)}
+        for key in kwargs:
+            if key in MANY_RELATION_KWARGS:
+                list_kwargs[key] = kwargs[key]
+        return PaginableManyRelatedField(**list_kwargs)
+
+
 class DynamicFieldsModelSerializer(serializers.ModelSerializer):
+    serializer_related_field = RelationSerializer
 
     def __init__(self, *args, **kwargs):
         super(DynamicFieldsModelSerializer, self).__init__(*args, **kwargs)
+        self.remove_unrequested_fields()
 
-    def configure_fieldsets(self, fieldsets):
-        for k in fieldsets:
-            v = fieldsets[k]
-            help_text = 'Returns {}'.format(v)
-            self.fields[k] = FieldsetField(source='*', names=v, help_text=help_text)
-            for name in v:
-                self.fields.pop(name, None)
+    def to_representation(self, value):
+        representation = super().to_representation(value)
+        return representation
+
+    def build_unknown_field(self, field_name, model_class):
+        method_name = 'get_{}'.format(field_name)
+        if method_name in self.context['view'].view_methods:
+            return MethodField, dict(source='*', method_name=method_name)
+        if field_name in self.context['view'].object_fieldsets:
+            names = self.context['view'].object_fieldsets[field_name]
+            return FieldsetField, dict(source='*', names=names, help_text='Returns {}'.format(names))
+        if field_name in self.context['view'].action_serializers:
+            serializer_class = ACTIONS[self.context['view'].action_serializers[field_name]]
+            return ActionField, dict(source='*', serializer_class=serializer_class)
+        if field_name in ACTIONS:
+            return ActionField, dict(source='*', serializer_class=ACTIONS[field_name])
+        super().build_unknown_field(field_name, model_class)
 
     def remove_unrequested_fields(self):
-        fields = self.context['request'].query_params.get('fields')
-        if fields:
-            fields = fields.split(',')
-            allowed = set(name.strip() for name in fields)
+        names = self.context['request'].query_params.get('only')
+        if names:
+            allowed = set(name.strip() for name in names.split(','))
             existing = set(self.fields.keys())
             for field_name in existing - allowed:
                 self.fields.pop(field_name)
+
+
+class ActionField(serializers.DictField):
+
+    def __init__(self, serializer_class, *args, **kwargs):
+        self.serializer_class = serializer_class
+        super().__init__(*args, **kwargs)
+
+    def to_representation(self, value):
+        serializer = self.serializer_class(data={})
+        if serializer.is_valid():
+            return serializer.submit()
+        return None
+
+    def to_internal_value(self, data):
+        return {}
 
 
 class FieldsetField(serializers.DictField):
@@ -112,10 +201,15 @@ class ChoiceFilter(filters.BaseFilterBackend):
         ]
 
 
+def to_snake_case(name):
+    return name if name.islower() else re.sub(r'(?<!^)(?=[A-Z0-9])', '_', name).lower()
+
+
 class ActionMetaclass(serializers.SerializerMetaclass):
     def __new__(mcs, name, bases, attrs):
         cls = super().__new__(mcs, name, bases, attrs)
         ACTIONS[name] = cls
+        ACTIONS[to_snake_case(name)] = cls
         return cls
 
 
@@ -151,25 +245,15 @@ class ModelViewSet(viewsets.ModelViewSet):
         if self.action == 'partial_update':
             return self.get_partial_update_serializer_class()
         elif self.action in self.action_serializers:
-            return ACTIONS[self.action_serializers[self.action]]
+            return ACTIONS[self.action_serializers.get(self.action, self.action)]
         return self.get_create_serializer_class()
 
     def get_list_serializer_class(self):
-        if self.list_display:
-            list_display = [name for name in self.list_display if name not in self.object_fieldsets]
-            fieldsets = {k:v for k, v in self.object_fieldsets.items() if k in self.list_display}
-        else:
-            list_display = '__all__'
-            fieldsets = self.object_fieldsets
+
         class Serializer(DynamicFieldsModelSerializer):
             class Meta:
                 model = self.model
-                fields = list_display
-
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.configure_fieldsets(fieldsets)
-                self.remove_unrequested_fields()
+                fields = self.list_display
 
         return Serializer
 
@@ -183,34 +267,15 @@ class ModelViewSet(viewsets.ModelViewSet):
         return Serializer
 
     def get_retrieve_serializer_class(self):
-        fields = []
-        fieldsets = {}
-        if self.view_display:
-            for k in self.view_display:
-                if k in self.object_fieldsets:
-                    fieldsets[k] = self.object_fieldsets[k]
-                    fields.extend(self.object_fieldsets[k])
-                else:
-                    fields.append(k)
-        else:
-            fieldsets.update(self.object_fieldsets)
+
         class Serializer(DynamicFieldsModelSerializer):
             class Meta:
                 model = self.model
-                exclude = ()
-
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.configure_fieldsets(fieldsets)
-                self.remove_unrequested_fields()
-                if fields:
-                    for k in list(self.fields.keys()):
-                        if k not in fields:
-                            self.fields.pop(k)
+                fields = self.view_display if self.view_display else '__all__'
 
         return Serializer
 
-    @swagger_auto_schema(manual_parameters=[only_fields])
+    @swagger_auto_schema(manual_parameters=[only_fields, limit_field, offset_field])
     def retrieve(self, request, *args, **kwargs):
         return super().retrieve(request, *args, **kwargs)
 
@@ -226,10 +291,10 @@ class ModelViewSet(viewsets.ModelViewSet):
 
     @swagger_auto_schema(manual_parameters=[choices_field, choices_search])
     def create(self, request, *args, **kwargs):
-        choices = request.query_params.get('choices_field')
-        if choices:
+        field_name = request.query_params.get('choices_field')
+        if field_name:
             term = request.query_params.get('choices_search')
-            qs = getattr(self.model, 'content_type').field.related_model.objects.all()
+            qs = getattr(self.model, field_name).field.related_model.objects.all()
             return Response(as_choices(generic_search(qs, term)))
         return super().create(request, *args, **kwargs)
 
@@ -273,6 +338,9 @@ def model_view_set_factory(model_name, filters=(), search=(), ordering=(), field
         view_actions = iter_to_list(_view_actions)
         list_actions = iter_to_list(_list_actions)
         action_serializers = {k:_view_actions[k] for k in _view_actions} | {k:_list_actions[k] for k in _list_actions}
+        view_methods = [name for name in (view_display+list_display) if name.startswith('get_')]
+        view_display = [name[4:] if name.startswith('get_') else name for name in view_display]
+        list_display = [name[4:] if name.startswith('get_') else name for name in list_display]
 
     actions = {}
     for d in (_view_actions, _list_actions):
@@ -316,7 +384,6 @@ class RealizarSoma(Action):
     b = serializers.IntegerField()
 
     def submit(self):
-        print(self.source)
         return dict(soma=self.data['a'] + self.data['b'])
 
 class RealizarSubtracao(Action):
@@ -325,8 +392,16 @@ class RealizarSubtracao(Action):
     b = serializers.IntegerField()
 
     def submit(self):
-        print(self.source)
         return dict(subtracao=self.data['a'] - self.data['b'])
+
+
+class ExibirAlertas(Action):
+    def submit(self):
+        return {'a': 1}
+
+class ExibirCartoes(Action):
+    def submit(self):
+        return {'b': 2}
 
 
 specification = yaml.safe_load(open('api.yml'))
@@ -351,4 +426,8 @@ for k, v in specification.get('models').items():
         ),
         name
     )
+
+def api_watchdog(sender, **kwargs):
+    sender.extra_files.add(Path('api.yml'))
+autoreload_started.connect(api_watchdog)
 

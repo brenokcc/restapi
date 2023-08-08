@@ -9,14 +9,26 @@ models:
       dados_acesso: date_joined, is_staff, is_active
       contato: email
     list:
-      fields: username, dados_acesso
+      fields: username, dados_acesso, get_content_types, alertas
       actions:
-        somar: RealizarSoma
+        somar: realizar_soma
+        alertas: exibir_alertas
     view:
-      fields: username, is_staff, is_active
+      fields: id, username, get_content_types, exibir_alertas, dados_gerais
+      #fields: exibir_alertas, username, is_staff, is_active, exibir_cartoes, auth_token
       actions:
-        subtrair: RealizarSubtracao
+        subtrair: realizar_subtracao
   auth.permission:
     prefix: permissions
     search: codename
     ordering: id, codename
+  auth.group:
+    prefix: groups
+    view:
+      fields: id, name, user_set, permissions
+  sessions.session:
+    prefix: sessions
+  authtoken.token:
+    prefix: tokens
+  contenttypes.contenttype:
+    prefix: contenttypes
