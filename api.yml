@@ -26,9 +26,115 @@ models:
     prefix: groups
     view:
       fields: id, name, user_set, permissions
-  sessions.session:
-    prefix: sessions
-  authtoken.token:
-    prefix: tokens
-  contenttypes.contenttype:
-    prefix: contenttypes
+  pnp.programa:
+      prefix: programas
+  pnp.tipoinconsistencia:
+      prefix: tipos_inconsistencia
+  pnp.justificativa:
+      prefix: justificativas
+  pnp.acao:
+      prefix: acao
+  pnp.regrainconsistencia:
+      prefix: regras_inconsistencia
+  pnp.configuracao:
+      prefix: configuracoes
+  pnp.areacnpq:
+      prefix: area_cnpq
+  pnp.turno:
+      prefix: turno
+  pnp.nivelensino:
+      prefix: niveis_ensino
+  pnp.eixo:
+      prefix: eixos
+  pnp.subeixo:
+      prefix: subeixos
+  pnp.tipocurso:
+      prefix: tipos_curso
+  pnp.mesorregiao:
+      prefix: mesorregioes
+  pnp.microrregiao:
+      prefix: microrregioes
+  pnp.municipio:
+      prefix: municipios
+  pnp.tipoinstituicao:
+      prefix: tipos_instituicao
+  pnp.tipounidade:
+      prefix: tipos_unidade
+  pnp.cursocatalogo:
+      prefix: cursos_catalogo
+  pnp.pessoa:
+      prefix: pessoas
+  pnp.administrador:
+      prefix: administradores
+  pnp.instituicao:
+      prefix: instituicoes
+  pnp.unidade:
+      prefix: unidades
+  pnp.modalidade:
+      prefix: modalidades
+  pnp.tipooferta:
+      prefix: tipos_oferta
+  pnp.faixarenda:
+      prefix: faixas_renda
+  pnp.situacaoinconsistencia:
+      prefix: situacoes_inconsistencia
+  pnp.curso:
+      prefix: cursos
+  pnp.ciclo:
+      prefix: ciclos
+  pnp.vagasciclo:
+      prefix: vagas_ciclo
+  pnp.raca:
+      prefix: racas
+  pnp.aluno:
+      prefix: alunos
+  pnp.situacaomatricula:
+      prefix: situacoes_matricula
+  pnp.matricula:
+      prefix: matriculas
+  pnp.inconsistencia:
+      prefix: inconsistencias
+  pnp.historicoalteracao:
+      prefix: historico_alteracao
+  pnp.alteracao:
+      prefix: alteracoes
+  pnp.cota:
+      prefix: cotas
+  pnp.regraassociacaoprograma:
+      prefix: regras_associacao_programa
+  pnp.arquivo:
+      prefix: arquivos
+  pnp.tipoerrocarga:
+      prefix: tipos_erro_carga
+  pnp.linhaarquivo:
+      prefix: linhas_arquivo
+  pnp.palavrasreservadas:
+      prefix: palavras_reservadas
+  pnp.nivelensinoservidor:
+      prefix: niveis_ensino_servidor
+  pnp.unidadeorganizacional:
+      prefix: unidades_organizacionais
+  pnp.escolaridade:
+      prefix: escolaridades
+  pnp.titulacao:
+      prefix: titulacoes
+  pnp.rsc:
+      prefix: rsc
+  pnp.grupocargoemprego:
+      prefix: grupos_cargo_emprego
+  pnp.cargoemprego:
+      prefix: cargos_emprego
+  pnp.situacaoservidor:
+      prefix: situacoes_servidor
+  pnp.jornadatrabalho:
+      prefix: jornadas_trabalho
+  pnp.classe:
+      prefix: classes
+  pnp.servidor:
+      prefix: servidores
+  pnp.relatorioinconsistencia:
+      prefix: relatorios_inconsistencia
+  pnp.historicosincronizacaosistec:
+      prefix: historicos_sincronizacao_sistec
+  pnp.arquivoexportacao:
+      prefix: arquivos_exportacao

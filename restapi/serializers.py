@@ -19,6 +19,7 @@ from rest_framework.relations import ManyRelatedField, MANY_RELATION_KWARGS
 from django_filters.rest_framework import DjangoFilterBackend
 from pathlib import Path
 from django.utils.autoreload import autoreload_started
+from rest_framework import permissions
 
 ACTIONS = {}
 
@@ -253,7 +254,7 @@ class ModelViewSet(viewsets.ModelViewSet):
         class Serializer(DynamicFieldsModelSerializer):
             class Meta:
                 model = self.model
-                fields = self.list_display
+                fields = self.list_display if self.list_display else '__all__'
 
         return Serializer
 
